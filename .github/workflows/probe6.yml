@@ -1,0 +1,29 @@
+name: macos-messages-native-create6
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  create6:
+    runs-on: macos-15
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
+      - name: run round-6 native-create probe
+        env:
+          OUT: ${{ github.workspace }}/out6
+        run: |
+          cd src; mkdir -p "$OUT"; bash create_probe.sh || echo "PROBE6_EXIT=$?"
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: messages-native-create6-evidence
+          path: out6
+          if-no-files-found: warn
