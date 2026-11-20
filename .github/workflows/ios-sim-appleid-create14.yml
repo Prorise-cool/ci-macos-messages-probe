@@ -1,0 +1,160 @@
+name: ios-sim-appleid-create14
+on:
+  workflow_dispatch:
+    inputs:
+      phone:
+        description: 'phone digits (E.164 without +)'
+        required: false
+        default: '447450699185'
+      cap_min:
+        description: 'probe wall-clock budget in minutes (<=22)'
+        required: false
+        default: '20'
+permissions:
+  contents: read
+jobs:
+  create14:
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      created: ${{ steps.v.outputs.created }}
+      apple_id: ${{ steps.v.outputs.apple_id }}
+      apple_pw: ${{ steps.v.outputs.apple_pw }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocrbox.swift -o ocrbox
+          swiftc -O drag.swift -o drag
+          swiftc -O cgui.swift -o cgui
+          ls -l ocrbox drag cgui
+      - name: dump preset simulator devices then create fresh UDID and run probe14
+        env:
+          OUT: ${{ github.workspace }}/out14
+          PHONE_PRIMARY: ${{ inputs.phone }}
+          CAP_MIN: ${{ inputs.cap_min }}
+          SECRETS_PATH: ${{ runner.temp }}/p14_secrets.txt
+        run: |
+          cd src
+          mkdir -p "$OUT"
+          echo "=== simctl list devices (image preset, before) ==="
+          xcrun simctl list devices -j | tee "$OUT/simctl_before_host.json"
+          python3 probe14.py || echo "PROBE14_EXIT=$?"
+          echo "--- verdict ---"
+          cat "$OUT/verdict.json" 2>/dev/null | head -c 6000 || true
+      - name: export outputs (password masked, never in artifact)
+        id: v
+        if: always()
+        env:
+          OUT: ${{ github.workspace }}/out14
+        run: |
+          python3 - <<'PY'
+          import json, os
+          out=os.environ.get('OUT','./out14')
+          rt=os.environ.get('RUNNER_TEMP','/tmp')
+          try:
+              v=json.load(open(os.path.join(out,'verdict.json')))
+          except Exception:
+              v={}
+          pw=''
+          try:
+              if v.get('created')==1:
+                  pw=open(os.path.join(rt,'p14pw')).read().strip()
+          except Exception:
+              pw=''
+          if pw:
+              print('::add-mask::'+pw)
+          print('created='+str(v.get('created',0)))
+          print('apple_id='+(v.get('account_candidate') or ''))
+          if pw:
+              print('apple_pw='+pw)
+          PY
+      - name: scrub local plaintext before upload
+        if: always()
+        run: |
+          O="$GITHUB_WORKSPACE/out14"
+          rm -f "${RUNNER_TEMP}/p14_secrets.txt" "${RUNNER_TEMP}/p14pw" 2>/dev/null || true
+          if [ -d "$O" ]; then
+            find "$O" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' \) -print0 2>/dev/null \
+              | xargs -0 -r sed -i '' -E 's/(password|pw)([=:" ]+)[^ ",\n]+/\1\2<redacted>/g' 2>/dev/null || true
+          fi
+          echo scrubbed
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-appleid-create14-evidence
+          path: ${{ github.workspace }}/out14
+          if-no-files-found: warn
+
+  login14:
+    needs: create14
+    if: ${{ needs.create14.outputs.created == '1' && needs.create14.outputs.apple_id != '' && needs.create14.outputs.apple_pw != '' }}
+    runs-on: macos-15
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O cgui.swift -o cgui
+          swiftc -O ocr.swift -o ocr
+          ls -l cgui ocr
+      - name: sign in to Messages and send ONE pitch to the official business line
+        env:
+          OUT: ${{ github.workspace }}/out14login
+          PHONE_PRIMARY: ${{ inputs.phone }}
+          APPLE_ID: ${{ needs.create14.outputs.apple_id }}
+          APPLE_PW: ${{ needs.create14.outputs.apple_pw }}
+        run: |
+          cd src; mkdir -p "$OUT"
+          export SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 messages_login_send.py stage --outdir "$OUT/stage" || echo "STAGE_EXIT=$?"
+          ( python3 messages_login_send.py login --outdir "$OUT/stage" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PW" --code 000000 \
+              > "$OUT/login_attempt.log" 2>&1 & echo $! > "$OUT/login.pid" )
+          sleep 45
+          python3 - <<'PY'
+          import os
+          import probe14
+          code = probe14.wait_sms(os.environ['PHONE_PRIMARY'], os.environ['SINCE'], timeout=150)
+          open(os.path.join(os.environ['OUT'], '2fa_code.txt'), 'w').write(code or '')
+          print('2fa_code_len=%d' % len(code or ''))
+          PY
+          kill "$(cat "$OUT/login.pid")" 2>/dev/null || true
+          python3 messages_login_send.py login --outdir "$OUT/stage" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PW" --code-file "$OUT/2fa_code.txt" \
+            || echo "LOGIN_EXIT=$?"
+          python3 messages_login_send.py status --outdir "$OUT/stage" || echo "STATUS_EXIT=$?"
+          python3 messages_login_send.py compose --outdir "$OUT/stage" \
+              --address "+19496788958" \
+              --body "Hi! I'd like to claim the free Devin Max one-month offer - please send the claim link or code." \
+            || echo "COMPOSE_EXIT=$?"
+          python3 messages_login_send.py send --outdir "$OUT/stage" \
+              --address "+19496788958" --confirm-send --allow "+19496788958" \
+            || echo "SEND_EXIT=$?"
+          sleep 540
+          python3 messages_login_send.py read --outdir "$OUT/stage" --limit 30 || echo "READ_EXIT=$?"
+          cp -f "$HOME/Library/Messages/chat.db" "$OUT/chat.db.snapshot" 2>/dev/null || true
+      - name: scrub + upload
+        if: always()
+        run: |
+          O="$GITHUB_WORKSPACE/out14login"
+          rm -f "${RUNNER_TEMP}/acct14.json" 2>/dev/null || true
+          if [ -d "$O" ]; then
+            find "$O" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' \) -print0 2>/dev/null \
+              | xargs -0 -r sed -i '' -E 's/(password|pw)([=:" ]+)[^ ",\n]+/\1\2<redacted>/g' 2>/dev/null || true
+          fi
+          echo scrubbed
+      - name: upload login evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-login14-evidence
+          path: ${{ github.workspace }}/out14login
+          if-no-files-found: warn
