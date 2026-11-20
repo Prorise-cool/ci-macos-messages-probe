@@ -6,7 +6,7 @@ import ApplicationServices
 let args = CommandLine.arguments
 func out(_ s: String) { print(s) }
 func err(_ s: String) -> Never { FileHandle.standardError.write((s+"\n").data(using:.utf8)!); exit(2) }
-guard args.count >= 2 else { err("usage: cgui list|ax|front <name>|key <text>|keycode <n>|click <x> <y>|axdump <pid> [depth]|axwinls <pid>|axfind <pid> <needle>|axset <pid> <needle> <text>|axpress <pid> <needle>|axfocus <pid> <needle>|axfindin <pid> <winsubrole> <needle>|axpressin <pid> <winsubrole> <needle>|axfillin <pid> <winsubrole> <text>") }
+guard args.count >= 2 else { err("usage: cgui axpid <appname>|axpressname <pid> <exactTitle>|axfilln <pid> <n> <text>|axformdump <pid>|list|ax|front <name>|key <text>|keycode <n>|click <x> <y>|axdump <pid> [depth]|axwinls <pid>|axfind <pid> <needle>|axset <pid> <needle> <text>|axpress <pid> <needle>|axfocus <pid> <needle>|axfindin <pid> <winsubrole> <needle>|axpressin <pid> <winsubrole> <needle>|axfillin <pid> <winsubrole> <text>") }
 let cmd = args[1]
 
 // ---------------------------------------------------------------- AX helpers
@@ -185,6 +185,58 @@ func pressFirst(_ ms: [(AXUIElement, Int)]) -> Int {
     return pressed
 }
 
+
+func runningPids(_ name: String) -> [(pid_t, String)] {
+    var res: [(pid_t, String)] = []
+    for a in NSWorkspace.shared.runningApplications {
+        let n = a.localizedName ?? ""
+        let b = a.bundleIdentifier ?? ""
+        if n == name || b == name || b.hasSuffix("." + name) { res.append((a.processIdentifier, n)) }
+    }
+    return res
+}
+func collectEditable(_ pid: pid_t, maxDepth: Int = 20) -> [(AXUIElement, Int)] {
+    var res: [(AXUIElement, Int)] = []
+    for w in appWindows(pid) {
+        walk(w, 0, maxDepth) { el, d in
+            let r = sattr(el, kAXRoleAttribute)
+            if r == "AXTextField" || r == "AXSecureTextField" || r == "AXTextArea" || r == "AXComboBox" { res.append((el, d)) }
+        }
+    }
+    return res
+}
+func norm(_ s: String) -> String {
+    var r = s.replacingOccurrences(of: "\u{202F}", with: " ")
+    r = r.replacingOccurrences(of: "\u{00A0}", with: " ")
+    r = r.replacingOccurrences(of: "\u{2019}", with: "'")
+    r = r.replacingOccurrences(of: "\u{2018}", with: "'")
+    r = r.replacingOccurrences(of: "\u{2026}", with: "...")
+    while r.contains("  ") { r = r.replacingOccurrences(of: "  ", with: " ") }
+    return r.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+func pressExact(_ pid: pid_t, _ title: String) -> Int {
+    let t = norm(title)
+    var hits: [(AXUIElement, Int)] = []
+    for w in appWindows(pid) { walk(w, 0, 20) { el, d in
+        if norm(sattr(el, kAXTitleAttribute)) == t && axActions(el).contains("AXPress") { hits.append((el, d)) }
+    } }
+    if hits.isEmpty {
+        for w in appWindows(pid) { walk(w, 0, 20) { el, d in
+            if norm(haystack(el)).contains(t) && axActions(el).contains("AXPress") { hits.append((el, d)) }
+        } }
+        out("exact-title miss, fell back to substring match: \(hits.count)")
+    }
+    out("exact matches=\(hits.count) for [\(title)]")
+    var n = 0
+    for (el, d) in hits.prefix(1) {
+        let r = AXUIElementPerformAction(el, kAXPressAction as CFString)
+        out("press depth=\(d) role=\(sattr(el, kAXRoleAttribute)) title=[\(sattr(el, kAXTitleAttribute))] id=[\(sattr(el, kAXIdentifierAttribute))] rc=\(r.rawValue) \(axEnabled(el))")
+        n += 1
+    }
+    if n == 0 { out("nothing pressable for [\(title)]") }
+    return n
+}
+
 switch cmd {
 case "list": listWindows()
 case "ax": out("AXIsProcessTrusted=\(AXIsProcessTrusted())")
@@ -266,6 +318,46 @@ case "axfocus":
     out("focus target depth=\(d) role=\(sattr(el, kAXRoleAttribute)) id=[\(sattr(el, kAXIdentifierAttribute))] \(axPosStr(el))")
     _ = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
     clickAt(Double(p.x + s.width/2), Double(p.y + s.height/2))
+
+case "axpid":
+    guard args.count > 2 else { err("axpid <appname>") }
+    for (pid, n) in runningPids(args[2]) { out("app=\(n) pid=\(pid)") }
+
+case "axpressname":
+    guard args.count > 3, let pid = Int32(args[2]) else { err("axpressname <pid> <exactTitle>") }
+    _ = pressExact(pid_t(pid), args[3])
+
+case "axfilln":
+    guard args.count > 4, let pid = Int32(args[2]), let n = Int(args[3]) else { err("axfilln <pid> <n> <text>") }
+    let eds = collectEditable(pid_t(pid))
+    out("editable_count=\(eds.count)")
+    for (i, (el, d)) in eds.enumerated() {
+        out("  #\(i) role=\(sattr(el, kAXRoleAttribute)) sub=\(sattr(el, kAXSubroleAttribute)) desc=[\(sattr(el, kAXDescriptionAttribute))] id=[\(sattr(el, kAXIdentifierAttribute))] value=[\(sattr(el, kAXValueAttribute).prefix(40))] \(axPosStr(el))")
+    }
+    if n < eds.count {
+        let (el, d) = eds[n]
+        let r = setValue(el, args[4])
+        out("set #\(n) role=\(sattr(el, kAXRoleAttribute)) id=[\(sattr(el, kAXIdentifierAttribute))] depth=\(d) rc=\(r.rawValue) readback=[\(sattr(el, kAXValueAttribute))]")
+    } else { out("index \(n) out of range") }
+
+case "axformdump":
+    guard args.count > 2, let pid = Int32(args[2]) else { err("axformdump <pid>") }
+    let subs = ["AXDialog", "AXSheet"]
+    var found = 0
+    for w in appWindows(pid_t(pid)) {
+        let sr = sattr(w, kAXSubroleAttribute)
+        if subs.contains(sr) || subs.contains(sattr(w, kAXRoleAttribute)) {
+            found += 1
+            out("== window sub=\(sr) role=\(sattr(w, kAXRoleAttribute)) \(axPosStr(w))")
+            walk(w, 0, 22) { el, d in
+                let r = sattr(el, kAXRoleAttribute)
+                if ["AXTextField","AXSecureTextField","AXTextArea","AXButton","AXStaticText","AXCheckBox","AXPopUpButton","AXComboBox","AXLink","AXImage","AXWebArea","AXGroup","AXMenuButton"].contains(r) {
+                    out(line(el, d))
+                }
+            }
+        }
+    }
+    out("form_windows=\(found)")
 
 default: err("unknown \(cmd)")
 }
