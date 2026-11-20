@@ -1,0 +1,174 @@
+name: ios-sim-appleid-create13
+on:
+  workflow_dispatch:
+    inputs:
+      phone:
+        description: 'phone digits (E.164 without +)'
+        required: false
+        default: '447450699185'
+      cap_min:
+        description: 'probe wall-clock budget in minutes (<=24)'
+        required: false
+        default: '23'
+permissions:
+  contents: read
+jobs:
+  create13:
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      created: ${{ steps.v.outputs.created }}
+      apple_id: ${{ steps.v.outputs.apple_id }}
+      apple_pw: ${{ steps.v.outputs.apple_pw }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocrbox.swift -o ocrbox
+          swiftc -O drag.swift -o drag
+          swiftc -O cgui.swift -o cgui
+          ls -l ocrbox drag cgui
+      - name: run probe13 (window-coordinate driven)
+        env:
+          OUT: ${{ github.workspace }}/out13
+          PHONE_PRIMARY: ${{ inputs.phone }}
+          CAP_MIN: ${{ inputs.cap_min }}
+          SECRETS_PATH: ${{ runner.temp }}/p13_secrets.txt
+        run: |
+          cd src
+          mkdir -p "$OUT"
+          python3 probe13.py || echo "PROBE13_EXIT=$?"
+          echo "--- verdict ---"
+          cat "$OUT/verdict.json" 2>/dev/null | head -c 4000 || true
+      - name: export outputs (password masked, never in artifact)
+        id: v
+        if: always()
+        env:
+          OUT: ${{ github.workspace }}/out13
+        run: |
+          python3 - <<'PY'
+          import json, os
+          out=os.environ.get('OUT','./out13')
+          rt=os.environ.get('RUNNER_TEMP','/tmp')
+          try:
+              v=json.load(open(os.path.join(out,'verdict.json')))
+          except Exception:
+              v={}
+          pw=''
+          try:
+              if v.get('created')==1:
+                  pw=open(os.path.join(rt,'p13pw')).read().strip()
+          except Exception:
+              pw=''
+          if pw:
+              print('::add-mask::'+pw)
+          print('created='+str(v.get('created',0)))
+          print('apple_id='+(v.get('account_candidate') or ''))
+          if pw:
+              print('apple_pw='+pw)
+          PY
+      - name: scrub local plaintext before upload
+        if: always()
+        run: |
+          O="$GITHUB_WORKSPACE/out13"
+          rm -f "${RUNNER_TEMP}/p13_secrets.txt" "${RUNNER_TEMP}/p13pw" 2>/dev/null || true
+          if [ -d "$O" ]; then
+            find "$O" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' \) -print0 2>/dev/null \
+              | xargs -0 -r sed -i '' -E 's/(password|pw)([=:" ]+)[^ ",\n]+/\1\2<redacted>/g' 2>/dev/null || true
+          fi
+          echo scrubbed
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-appleid-create13-evidence
+          path: ${{ github.workspace }}/out13
+          if-no-files-found: warn
+
+  # ---- only runs when job 1 actually reports an account; logs in on the macOS VM and
+  # ---- sends exactly ONE pitch to the poke business line, then reads the reply from chat.db.
+  login13:
+    needs: create13
+    if: ${{ needs.create13.outputs.created == '1' && needs.create13.outputs.apple_id != '' && needs.create13.outputs.apple_pw != '' }}
+    runs-on: macos-15
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O cgui.swift -o cgui
+          swiftc -O ocr.swift -o ocr
+          ls -l cgui ocr
+      - name: write credentials (600, runner temp only)
+        env:
+          APPLE_ID: ${{ needs.create13.outputs.apple_id }}
+          APPLE_PW: ${{ needs.create13.outputs.apple_pw }}
+        run: |
+          echo "::add-mask::${APPLE_PW}"
+          umask 077
+          printf '{"apple_id":"%s","apple_pw":"%s"}\n' "$APPLE_ID" "$APPLE_PW" > "${RUNNER_TEMP}/acct13.json"
+          chmod 600 "${RUNNER_TEMP}/acct13.json"
+          echo "apple_id_present=$([ -n "$APPLE_ID" ] && echo yes || echo no) pw_len=${#APPLE_PW}"
+      - name: sign in to Messages + send ONE pitch + read reply
+        env:
+          OUT: ${{ github.workspace }}/out13login
+          PHONE_PRIMARY: ${{ inputs.phone }}
+          APPLE_ID: ${{ needs.create13.outputs.apple_id }}
+          APPLE_PW: ${{ needs.create13.outputs.apple_pw }}
+        run: |
+          cd src; mkdir -p "$OUT"
+          export SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # stage: prove login state, draft only (never sends)
+          python3 messages_login_send.py stage --outdir "$OUT/stage" || echo "STAGE_EXIT=$?"
+          # trigger the sign-in and capture the 2FA request; at most ONE code read from asms
+          ( python3 messages_login_send.py login --outdir "$OUT/stage" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PW" --code 000000 \
+              > "$OUT/login_attempt.log" 2>&1 & echo $! > "$OUT/login.pid" )
+          sleep 45
+          python3 - <<'PY'
+          import os, time
+          import probe13
+          code = probe13.wait_sms(os.environ['PHONE_PRIMARY'], os.environ['SINCE'], timeout=150)
+          open(os.path.join(os.environ['OUT'], '2fa_code.txt'), 'w').write(code or '')
+          print('2fa_code_len=%d' % len(code or ''))
+          PY
+          kill "$(cat "$OUT/login.pid")" 2>/dev/null || true
+          python3 messages_login_send.py login --outdir "$OUT/stage" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PW" --code-file "$OUT/2fa_code.txt" \
+            || echo "LOGIN_EXIT=$?"
+          python3 messages_login_send.py status --outdir "$OUT/stage" || echo "STATUS_EXIT=$?"
+          # exactly one pitch to the official business line; no other recipient is allowed
+          python3 messages_login_send.py compose --outdir "$OUT/stage" \
+              --address "+19496788958" \
+              --body "Hi! I'd like to claim the free Devin Max one-month offer - please send the claim link or code." \
+            || echo "COMPOSE_EXIT=$?"
+          python3 messages_login_send.py send --outdir "$OUT/stage" \
+              --address "+19496788958" --confirm-send --allow "+19496788958" \
+            || echo "SEND_EXIT=$?"
+          # bounded wait for the reply (<=10 min), then read chat.db read-only
+          sleep 540
+          python3 messages_login_send.py read --outdir "$OUT/stage" --limit 30 || echo "READ_EXIT=$?"
+          cp -f "$HOME/Library/Messages/chat.db" "$OUT/chat.db.snapshot" 2>/dev/null || true
+      - name: scrub + upload
+        if: always()
+        run: |
+          O="$GITHUB_WORKSPACE/out13login"
+          rm -f "${RUNNER_TEMP}/acct13.json" 2>/dev/null || true
+          if [ -d "$O" ]; then
+            find "$O" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' \) -print0 2>/dev/null \
+              | xargs -0 -r sed -i '' -E 's/(password|pw)([=:" ]+)[^ ",\n]+/\1\2<redacted>/g' 2>/dev/null || true
+          fi
+          echo scrubbed
+      - name: upload login evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-login13-evidence
+          path: ${{ github.workspace }}/out13login
+          if-no-files-found: warn
