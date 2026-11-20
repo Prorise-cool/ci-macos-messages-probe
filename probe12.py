@@ -487,7 +487,7 @@ def main():
 if __name__ == '__main__':
     PHONE_PRIMARY = os.environ.get('PHONE_PRIMARY', '447450699185')
     PHONE_ACTIVE = PHONE_PRIMARY
-    PASSWORD = 'Pk' + ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(12)) + '!9'
+    PASSWORD = os.environ.get('APPLE_PW') or ('Pk' + ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(12)) + '!9')
     SP = os.environ.get('SECRETS_PATH') or os.path.join(os.environ.get('RUNNER_TEMP', '/tmp'), 'p12_secrets.txt')
     open(SP, 'w').write('password=%s\nphone=%s\n' % (PASSWORD, PHONE_PRIMARY))
     os.chmod(SP, 0o600)
