@@ -165,22 +165,33 @@ def find(boxes, needle):
             return b
     return None
 
-def find_fuzzy(boxes, needle):
+def find_list(boxes, needle):
+    """All plausible matches, best first. Exact > needle-inside-box > box-inside-needle > fuzzy."""
     n = norm(needle)
     if not n:
-        return None
-    best = None
+        return []
+    scored = []
     for b in boxes:
         k = norm(b[4])
         if not k:
             continue
-        if n in k or (len(k) >= 6 and len(n) >= 6 and k in n):
-            return b
-        d = lev(k[:len(n) + 2], n)
-        if len(n) >= 5 and d <= max(2, len(n) // 4):
-            if best is None or d < best[0]:
-                best = (d, b)
-    return best[1] if best else None
+        if k == n:
+            sc = 1000.0
+        elif n in k:
+            sc = 600.0 + 100.0 * len(n) / max(1, len(k))
+        elif len(k) >= 5 and len(n) >= 5 and k in n:
+            sc = 300.0 + 100.0 * len(k) / max(1, len(n))
+        else:
+            d = lev(k[:len(n) + 2], n)
+            sc = (150.0 - d) if (len(n) >= 5 and d <= max(2, len(n) // 4)) else -1
+        if sc >= 0:
+            scored.append((sc, b))
+    scored.sort(key=lambda x: -x[0])
+    return [b for _, b in scored]
+
+def find_fuzzy(boxes, needle):
+    lst = find_list(boxes, needle)
+    return lst[0] if lst else None
 
 def match_any(boxes, needles):
     for nd in needles:
@@ -280,13 +291,19 @@ def tap_label(needle, tag='tap', abort_if_stuck=False, timeout=14):
     wb = WIN['b'] or sim_window()
     WIN['b'] = wb
     wboxes, _ = win_ocr(tag + '_w')
-    b = find_fuzzy(wboxes, needle)
-    if b:
+    cands = find_list(wboxes, needle)[:3]
+    tried = []
+    for b in cands:
         X, Y = int(round(b[0])), int(round(b[1]))
+        if any(abs(X - x) < 12 and abs(Y - y) < 12 for x, y in tried):
+            continue
+        tried.append((X, Y))
         log('TAPW [%s] window(%d,%d) text=%r' % (needle, X, Y, b[4][:40]))
         if click_verify(needle, X, Y, timeout=timeout):
             return True
-        log('TAPW no effect, trying device-mapped fallback')
+        log('TAPW no effect at (%d,%d), next candidate' % (X, Y))
+    if cands:
+        log('TAPW [%s] window candidates exhausted (%d tried)' % (needle, len(tried)))
     elif wboxes:
         log('TAPW [%s] not found in window OCR; texts=%s' % (needle, [x[4][:22] for x in wboxes][:16]))
     # fallback: device OCR + affine map
