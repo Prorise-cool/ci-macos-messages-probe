@@ -209,15 +209,19 @@ def calibrate(tag='cal'):
     dev = devshot(tag + '_d'); host = hostshot(tag + '_h')
     CAL['devsz'] = png_size(dev)
     d = ocrbox(dev); h = ocrbox(host)
+    from collections import Counter
+    dk = [norm(t) for cx, cy, w, hh, t in d if len(norm(t)) >= 4]
+    hk = [norm(t) for cx, cy, w, hh, t in h if len(norm(t)) >= 4]
+    dc, hc = Counter(dk), Counter(hk)
     dm = {}
     for cx, cy, w, hh, t in d:
         k = norm(t)
-        if len(k) >= 4 and k not in dm:
+        if dc.get(k) == 1:
             dm[k] = (cx, cy)
     pairs = []
     for cx, cy, w, hh, t in h:
         k = norm(t)
-        if k in dm:
+        if k in dm and hc.get(k) == 1:   # only unambiguous labels (home screen has duplicate app names)
             pairs.append((dm[k][0], dm[k][1], cx, cy, t))
     log('CAL dev_boxes=%d host_boxes=%d pairs=%d devsz=%s win=%s' % (len(d), len(h), len(pairs), CAL['devsz'], WIN['b']))
     for p in pairs[:10]:
@@ -488,7 +492,7 @@ def pick_device():
             continue
         for dv in devs:
             if dv.get('isAvailable') and dv.get('name', '').startswith('iPhone'):
-                cands.append(dv)
+                cands.append(dict(dv, _runtime=rt))
     if cands:
         cands.sort(key=lambda x: (0 if '16e' in x['name'] else 1))
         return cands[0]
@@ -535,7 +539,9 @@ def main():
             dt = next((x for x in dts if x.get('name', '').startswith('iPhone')), None)
         ios_rt = [x for x in rts if 'iOS' in x.get('name', '') and x.get('isAvailable')]
         ios_rt.sort(key=lambda x: x.get('version', ''), reverse=True)
-        rt = ios_rt[0] if ios_rt else None
+        # prefer the SAME runtime as the image-preset device (keeps the UI/OCR the same as probe13)
+        br = dev.get('_runtime')
+        rt = next((x for x in rts if x.get('identifier') == br), None) or (ios_rt[0] if ios_rt else None)
         log('CREATE_PLAN dt=%s rt=%s' % (dt and dt.get('identifier'), rt and rt.get('identifier')))
         if dt and rt:
             s2, out2 = sh(['xcrun', 'simctl', 'create', 'i103580-fresh', dt['identifier'], rt['identifier']], t=120)
