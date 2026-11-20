@@ -16,12 +16,15 @@ run(){ echo "--- \$ $*" | tee -a "$LOG"; TO 40 "$@" 2>&1 | sed 's/\r//' | head -
 pids(){ TO 30 ./cgui list 2>/dev/null | grep -i "owner=$1" | sed -E 's/.*pid=([0-9]+).*/\1/' | sort -u; }
 allpids(){ pgrep -f "$1" 2>/dev/null | sort -u; }
 shot(){ local n="$1"; TO 25 screencapture -x "$OUT/$n.png" >/dev/null 2>&1; if [ -x ./ocr ]; then TO 45 ./ocr "$OUT/$n.png" > "$OUT/$n.ocr.txt" 2>&1; grep -h -E '^BEST' "$OUT/$n.ocr.txt" 2>/dev/null | cut -c1-1200 | head -1 | tee -a "$LOG"; fi; }
-VMHITS(){ if grep -q -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' "$1" 2>/dev/null; then
-    echo "!!! VM_POLICY_TEXT_FOUND in $1" | tee -a "$LOG"; grep -n -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' "$1" | head -10 | tee -a "$LOG"
+VMHITS(){ if grep -v -i 'Specifications' "$1" 2>/dev/null | grep -q -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this'; then
+    echo "!!! VM_POLICY_TEXT_FOUND in $1" | tee -a "$LOG"; grep -v -i 'Specifications' "$1" | grep -n -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' | head -10 | tee -a "$LOG"
     case "$1" in *after_continue*) echo "Y" > "$OUT/vm_flag";; esac
   else echo "no VM-policy text in $1" | tee -a "$LOG"; fi; }
 adump(){ # label pid depth
-  local lbl="$1" pid="$2" dep="${3:-22}" f="$OUT/${lbl}.txt"
+  local lbl="$1"
+  local pid="$2"
+  local dep="${3:-22}"
+  local f="$OUT/${lbl}.txt"
   echo "--- axdump $lbl pid=$pid depth=$dep" | tee -a "$LOG"
   TO 60 ./cgui axdump "$pid" "$dep" > "$f" 2>&1
   echo "dump[$lbl] lines=$(wc -l < "$f" 2>/dev/null || echo 0)" | tee -a "$LOG"
@@ -95,7 +98,7 @@ ALL="$OUT/after_continue_texts.txt"
 cat "$OUT/after_continue_"*.txt 2>/dev/null > "$OUT/after_all.txt"
 OCRALL="$OUT/r10_02_after_4.ocr.txt $OUT/r10_02_after_5.ocr.txt"
 V="UNKNOWN"
-if grep -q -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' "$OUT/after_all.txt" $OCRALL 2>/dev/null; then V="VM_ALERT"
+if grep -v -i 'Specifications' "$OUT/after_all.txt" 2>/dev/null | grep -q -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' || grep -q -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' $OCRALL 2>/dev/null; then V="VM_ALERT"
 elif grep -q -i 'AXSecureTextField' "$OUT/after_all.txt" 2>/dev/null; then V="PASSWORD_FIELD"
 elif grep -q -iE 'password|verification code|two-factor|two factor|6-digit|trusted device' "$OUT/after_all.txt" $OCRALL 2>/dev/null; then V="PASSWORD_OR_2FA_TEXT"
 elif grep -q -iE 'not found|could not|incorrect|invalid|unable to|does not exist|couldn.t' "$OUT/after_all.txt" $OCRALL 2>/dev/null; then V="SERVER_REJECTED_AUTH_REACHABLE"
