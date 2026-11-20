@@ -413,7 +413,14 @@ def cmd_stage(a):
     time.sleep(8)
     win = windows()
     res['steps']['windows_launch'] = msg_windows(win)
+    res['steps']['list_lines'] = len((win.get('raw') or '').splitlines())
     pid = front_pid(win)
+    if not pid:
+        pg = run(['pgrep', '-x', 'Messages'])
+        first = (pg.get('out') or '').splitlines()
+        if first:
+            pid = int(first[0])
+            res['steps']['pid_source'] = 'pgrep'
     res['pid'] = pid
     if not pid:
         res['stage'] = 'NO_MESSAGES_WINDOW'
@@ -462,6 +469,10 @@ def cmd_stage(a):
     win = windows()
     res['steps']['windows_after_open'] = msg_windows(win)
     pid2 = front_pid(win) or pid
+    if not pid2:
+        pg = run(['pgrep', '-x', 'Messages'])
+        first = (pg.get('out') or '').splitlines()
+        if first: pid2 = int(first[0])
     cgui('front', 'Messages')
     time.sleep(2)
     res['steps']['axfind_body'] = (cgui('axfind', pid2, 'messagebodyfield')['out'] or '')[:1500]
