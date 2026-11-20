@@ -405,9 +405,84 @@ def cmd_status(a):
     return 0
 
 
+def cmd_stage(a):
+    """Two-stage cold-send readiness gate: verify login state FIRST, only then touch compose.
+    Absolutely never presses Return / sends anything."""
+    res = {'ts': time.time(), 'stage': None, 'steps': {}}
+    run(['open', '-a', 'Messages'])
+    time.sleep(8)
+    win = windows()
+    res['steps']['windows_launch'] = msg_windows(win)
+    pid = front_pid(win)
+    res['pid'] = pid
+    if not pid:
+        res['stage'] = 'NO_MESSAGES_WINDOW'
+        log(a.outdir, 'stage.json', res)
+        print(json.dumps(res, indent=2, ensure_ascii=False)[:3000])
+        return 4
+    cgui('front', 'Messages')
+    time.sleep(2)
+
+    # ---- stage 1: login state (AX only; AppleEvents are known -1712 before sign-in)
+    winls = cgui('axwinls', pid)
+    res['steps']['axwinls'] = (winls['out'] or '')[:4000]
+    dialogs = [l for l in (winls['out'] or '').splitlines() if 'sub=AXDialog' in l]
+    ax = cgui('axdump', pid, 10)
+    txt = ax['out'] or ''
+    open(os.path.join(a.outdir, 'stage_ax.txt'), 'w').write(txt)
+    markers = [m for m in ('Sign in to iMessage', 'Email or Phone Number', 'Sign In') if m in txt]
+    res['steps']['signin_markers'] = markers
+    res['steps']['dialog_count'] = len(dialogs)
+    res['steps']['dialog_lines'] = dialogs[:4]
+    signed_in = (len(dialogs) == 0) and ('id=messageBodyField' in txt) and not markers
+    res['signed_in'] = signed_in
+    sh = shot(a.outdir, 'stage_01_login_state')
+    res['steps']['screenshot_login'] = {'rc': sh['rc'], 'ocr': (sh.get('ocr') or '')[-700:]}
+    if not signed_in:
+        res['stage'] = 'NEEDS_APPLE_ID'
+        res['min_input'] = {
+            'apple_id': 'Apple ID email address (human supplies)',
+            'password': 'Apple ID password (human supplies via env/secret, never committed)',
+            'two_factor_code': '6-digit code read once by the human from the trusted device/inbox',
+            'how': 'cgui axfillin <pid> AXDialog "<apple id>" then axpressin <pid> AXDialog "Next"; '
+                   'fill password/2FA the same way; re-run this command to confirm signed_in=true',
+        }
+        log(a.outdir, 'stage.json', res)
+        print(json.dumps(res, indent=2, ensure_ascii=False)[:4000])
+        return 10
+
+    # ---- stage 2: compose reachability only (draft, never send)
+    db_before = chat_db_state()
+    res['steps']['chat_db_before'] = db_before
+    body = a.type_text or 'PROBE_MARKER_i102896_DO_NOT_SEND'
+    url = 'sms://open?address=%s&body=%s' % (a.address, body.replace(' ', '%20').replace('&', '%26'))
+    res['steps']['compose_url'] = url
+    res['steps']['open'] = run(['open', url])
+    time.sleep(8)
+    win = windows()
+    res['steps']['windows_after_open'] = msg_windows(win)
+    pid2 = front_pid(win) or pid
+    cgui('front', 'Messages')
+    time.sleep(2)
+    res['steps']['axfind_body'] = (cgui('axfind', pid2, 'messagebodyfield')['out'] or '')[:1500]
+    res['steps']['axset_body'] = (cgui('axset', pid2, 'messagebodyfield', body)['out'] or '')[:1200]
+    time.sleep(1)
+    sh = shot(a.outdir, 'stage_02_compose')
+    res['steps']['ocr_compose'] = (sh.get('ocr') or '')[-1200:]
+    db_after = chat_db_state()
+    res['steps']['chat_db_after'] = db_after
+    res['nothing_sent'] = (db_before.get('count_message') == db_after.get('count_message'))
+    res['stage'] = 'READY_TO_SEND'
+    res['send_guard'] = ('actual delivery only via: python3 messages_login_send.py send '
+                        '--confirm-send --allow +19496788958 (requires human go-ahead)')
+    log(a.outdir, 'stage.json', res)
+    print(json.dumps(res, indent=2, ensure_ascii=False)[:5000])
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['probe', 'login', 'compose', 'send', 'read', 'status'])
+    ap.add_argument('cmd', choices=['probe', 'login', 'compose', 'send', 'read', 'status', 'stage'])
     ap.add_argument('--outdir', default='./msgout')
     ap.add_argument('--apple-id')
     ap.add_argument('--password')
@@ -423,7 +498,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
     fn = {'probe': cmd_probe, 'login': cmd_login, 'compose': cmd_compose,
-          'send': cmd_send, 'read': cmd_read, 'status': cmd_status}[a.cmd]
+          'send': cmd_send, 'read': cmd_read, 'status': cmd_status, 'stage': cmd_stage}[a.cmd]
     return fn(a)
 
 
