@@ -1,0 +1,29 @@
+name: macos-messages-native-create7
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  create7:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
+      - name: run round-7 bypass probe
+        env:
+          OUT: ${{ github.workspace }}/out7
+        run: |
+          cd src; mkdir -p "$OUT"; bash create2.sh || echo "PROBE7_EXIT=$?"
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: messages-native-create7-evidence
+          path: out7
+          if-no-files-found: warn
