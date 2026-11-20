@@ -1,0 +1,29 @@
+name: macos-messages-automation-probe3
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe3:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
+      - name: run round-3 probe
+        env:
+          OUT: ${{ github.workspace }}/out3
+        run: |
+          cd src; mkdir -p "$OUT"; bash probe3.sh || echo "PROBE3_EXIT=$?"
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: messages-probe3-evidence
+          path: out3
+          if-no-files-found: warn
