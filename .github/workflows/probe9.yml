@@ -1,0 +1,29 @@
+name: macos-apple-login-vmgate-probe9
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe9:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
+      - name: run round-9 login-vs-VM-gate probe
+        env:
+          OUT: ${{ github.workspace }}/out9
+        run: |
+          cd src; mkdir -p "$OUT"; bash probe9.sh || echo "PROBE8_EXIT=$?"
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-login-vmgate-evidence9
+          path: out9
+          if-no-files-found: warn
