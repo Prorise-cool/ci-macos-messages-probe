@@ -1,0 +1,29 @@
+name: macos-messages-automation-probe5
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe5:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
+      - name: run round-4 probe
+        env:
+          OUT: ${{ github.workspace }}/out5
+        run: |
+          cd src; mkdir -p "$OUT"; bash probe5.sh || echo "PROBE5_EXIT=$?"
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: messages-probe5-evidence
+          path: out5
+          if-no-files-found: warn
