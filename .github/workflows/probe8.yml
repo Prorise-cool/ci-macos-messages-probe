@@ -1,0 +1,29 @@
+name: macos-native-create8
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  create8:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
+      - name: run round-8 bypass probe
+        env:
+          OUT: ${{ github.workspace }}/out8
+        run: |
+          cd src; mkdir -p "$OUT"; bash create3.sh || echo "PROBE7_EXIT=$?"
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: messages-native-create8-evidence
+          path: out8
+          if-no-files-found: warn
