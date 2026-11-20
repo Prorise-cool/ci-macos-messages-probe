@@ -195,9 +195,15 @@ func runningPids(_ name: String) -> [(pid_t, String)] {
     }
     return res
 }
+func roots(_ pid: pid_t) -> [AXUIElement] {
+    var r = appWindows(pid)
+    let app = appEl(pid)
+    r.append(app)   // walk the app's child tree too: kAXWindowsAttribute is often empty in this app
+    return r
+}
 func collectEditable(_ pid: pid_t, maxDepth: Int = 20) -> [(AXUIElement, Int)] {
     var res: [(AXUIElement, Int)] = []
-    for w in appWindows(pid) {
+    for w in roots(pid) {
         walk(w, 0, maxDepth) { el, d in
             let r = sattr(el, kAXRoleAttribute)
             if r == "AXTextField" || r == "AXSecureTextField" || r == "AXTextArea" || r == "AXComboBox" { res.append((el, d)) }
@@ -217,11 +223,11 @@ func norm(_ s: String) -> String {
 func pressExact(_ pid: pid_t, _ title: String) -> Int {
     let t = norm(title)
     var hits: [(AXUIElement, Int)] = []
-    for w in appWindows(pid) { walk(w, 0, 20) { el, d in
+    for w in roots(pid) { walk(w, 0, 20) { el, d in
         if norm(sattr(el, kAXTitleAttribute)) == t && axActions(el).contains("AXPress") { hits.append((el, d)) }
     } }
     if hits.isEmpty {
-        for w in appWindows(pid) { walk(w, 0, 20) { el, d in
+        for w in roots(pid) { walk(w, 0, 20) { el, d in
             if norm(haystack(el)).contains(t) && axActions(el).contains("AXPress") { hits.append((el, d)) }
         } }
         out("exact-title miss, fell back to substring match: \(hits.count)")
