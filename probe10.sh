@@ -86,6 +86,21 @@ if [ "$post_en" != "enabled=true" ]; then
 fi
 for i in 1 2 3 4 5; do sleep 8; echo "--- t+$((i*8))s"; shot "r10_02_after_$i"; TO 30 ./cgui list 2>&1 | grep -iE 'owner=(System Settings|akd|appleaccountd|Messages|AKAuthorization)' | head -6 | tee -a "$LOG"; done
 
+L "3c. password stage: ONE dummy-password submit on the SAME non-existent placeholder address"
+PW="PokeProbe-$(date +%s)-NotARealPassword"
+echo "dummy_password_len=${#PW} (single non-guessing attempt against a placeholder address that cannot exist)" | tee -a "$LOG"
+TO 60 ./cgui axset "$SP" "password_text_field" "$PW" 2>&1 | head -6 | tee -a "$LOG"
+sleep 2
+adump "pw_filled" "$SP" 26
+grep -E 'id=\[PASSWORD_TEXT_FIELD\]|id=\[LOGIN_BUTTON\]' "$OUT/pw_filled.txt" | head -4 | tee -a "$LOG"
+post_pw_en=$(grep -E 'id=\[LOGIN_BUTTON\]' "$OUT/pw_filled.txt" | grep -o 'enabled=[a-z]*' | head -1)
+echo "pw_continue_enabled=$post_pw_en" | tee -a "$LOG"
+TO 40 ./cgui axpress "$SP" "LOGIN_BUTTON" 2>&1 | head -5 | tee -a "$LOG"
+for i in 1 2 3 4; do sleep 8; echo "--- pw t+$((i*8))s"; shot "r10_03_pw_$i"; TO 30 ./cgui list 2>&1 | grep -iE 'owner=(System Settings|akd|appleaccountd|AKAuthorization)' | head -6 | tee -a "$LOG"; done
+dumpall "after_pw"
+echo "--- OCR of pw-submit screen:" | tee -a "$LOG"
+grep -h -E '^BEST' "$OUT/r10_03_pw_4.ocr.txt" 2>/dev/null | cut -c1-1200 | tee -a "$LOG"
+
 L "4. full multi-process AX dump after submit"
 dumpall "after_continue"
 echo "--- OCR verbatim of the post-submit screen:" | tee -a "$LOG"
@@ -104,6 +119,14 @@ elif grep -q -iE 'password|verification code|two-factor|two factor|6-digit|trust
 elif grep -q -iE 'not found|could not|incorrect|invalid|unable to|does not exist|couldn.t' "$OUT/after_all.txt" $OCRALL 2>/dev/null; then V="SERVER_REJECTED_AUTH_REACHABLE"
 fi
 [ -f "$OUT/vm_flag" ] && V="VM_ALERT"
+cat "$OUT/after_pw_"*.txt 2>/dev/null > "$OUT/after_pw_all.txt"
+PWOCR="$OUT/r10_03_pw_3.ocr.txt $OUT/r10_03_pw_4.ocr.txt"
+V2="UNKNOWN"
+if grep -v -i 'Specifications' "$OUT/after_pw_all.txt" 2>/dev/null | grep -q -i -E 'virtual machine|Use an Apple device|cannot be used|not supported on this' || grep -q -i -E 'virtual machine|Use an Apple device|cannot be used' $PWOCR 2>/dev/null; then V2="VM_ALERT_AT_PASSWORD"
+elif grep -q -iE 'incorrect|not found|could not|unable|try again|wrong|verification code|two-factor|two factor|captcha' "$OUT/after_pw_all.txt" $PWOCR 2>/dev/null; then V2="AUTH_SERVER_REACHED"
+elif grep -q -i 'PASSWORD_TEXT_FIELD' "$OUT/after_pw_all.txt" 2>/dev/null; then V2="STILL_PASSWORD_FORM"
+fi
+echo "VERDICT2=$V2" | tee -a "$LOG"
 echo "VERDICT=$V" | tee -a "$LOG"
 echo "--- post-submit texts (unique) ---" | tee -a "$LOG"; head -60 "$OUT/after_continue_texts.txt" 2>/dev/null | tee -a "$LOG"
 
