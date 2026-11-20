@@ -1,0 +1,41 @@
+name: macos-messages-automation-probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: env probe
+        run: |
+          set -x
+          sw_vers; uname -m; sysctl -n hw.model
+          id; who; echo "SESSIONNAME=${SESSIONNAME:-unset}"
+          xcodebuild -version 2>/dev/null | head -2 || true
+          swiftc --version 2>/dev/null | head -2 || true
+          which sqlite3 osascript screencapture open log
+      - name: build helpers (Vision OCR + CGWindow/CGEvent/AX probe)
+        run: |
+          swiftc -O ocr.swift -o ocr && ls -l ocr
+          swiftc -O cgui.swift -o cgui && ls -l cgui
+          file cgui ocr
+      - name: run messages automation probe
+        env:
+          OUT: ${{ github.workspace }}/out
+        run: |
+          mkdir -p "$OUT"
+          bash probe.sh || echo "PROBE_SCRIPT_EXIT=$?"
+      - name: summary
+        if: always()
+        run: |
+          echo "### probe log tail"; tail -80 "${{ github.workspace }}/out/probe.log" 2>/dev/null || true
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: messages-probe-evidence
+          path: out
+          if-no-files-found: warn
