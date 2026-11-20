@@ -1,12 +1,12 @@
-name: macos-native-create8
+name: macos-apple-login-vmgate-probe8
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  create8:
+  probe8:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -15,15 +15,15 @@ jobs:
         run: |
           cd src
           swiftc -O ocr.swift -o ocr && swiftc -O cgui.swift -o cgui && ls -l cgui ocr
-      - name: run round-8 bypass probe
+      - name: run round-8 login-vs-VM-gate probe
         env:
           OUT: ${{ github.workspace }}/out8
         run: |
-          cd src; mkdir -p "$OUT"; bash create3.sh || echo "PROBE7_EXIT=$?"
+          cd src; mkdir -p "$OUT"; bash probe8.sh || echo "PROBE8_EXIT=$?"
       - name: upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: messages-native-create8-evidence
+          name: apple-login-vmgate-evidence
           path: out8
           if-no-files-found: warn
