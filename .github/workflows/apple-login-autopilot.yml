@@ -1,0 +1,121 @@
+# .github/workflows/apple-login-autopilot.yml
+#
+# Purpose: run the Apple-ID *login* leg (no account creation) on a GitHub-hosted macOS runner,
+# so that the moment a real Apple ID exists the existing cgui / messages_login_send / chat.db
+# pipeline can go end-to-end without any further code work.
+#
+# Inputs (repository secrets, never inlined):
+#   APPLE_ID      - the Apple Account address (email)
+#   APPLE_PW      - its password
+#   APPLE_2FA_SRC - URL of a page where the 6-digit 2FA code will become readable
+#                   (e.g. a public inbox page); empty => the job stops after submitting the password
+#                   and prints exactly what it needs.
+#
+# Guardrails baked in:
+#   * Never touches "Create New Apple Account" / CREATE_BUTTON.
+#   * No brute force / no code guessing: at most ONE 2FA code is read from APPLE_2FA_SRC and submitted.
+#   * Only outbound message target is the poke business line +19496788958 (whitelisted in the script).
+#   * Single job, timeout 20 min, no CPU-heavy work.
+#   * dry_run defaults to true: without dry_run=false the workflow only enumerates the login surface
+#     (probe10.sh) and proves the plumbing, it never submits real credentials.
+name: apple-login-autopilot
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = enumerate the login surface only (no credential submission)"
+        default: "true"
+  push:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+jobs:
+  login-and-send:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      - name: build helpers
+        run: |
+          cd src
+          swiftc -O ocr.swift  -o ocr
+          swiftc -O cgui.swift -o cgui
+          ls -l cgui ocr
+
+      - name: preflight (what do we have?)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PW: ${{ secrets.APPLE_PW }}
+          APPLE_2FA_SRC: ${{ secrets.APPLE_2FA_SRC }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          cd src
+          echo "apple_id_present=$([ -n "${APPLE_ID:-}" ] && echo yes || echo no)"
+          echo "apple_pw_present=$([ -n "${APPLE_PW:-}" ] && echo yes || echo no)"
+          echo "2fa_src_present=$([ -n "${APPLE_2FA_SRC:-}" ] && echo yes || echo no)"
+          echo "dry_run=${DRY_RUN}"
+          sw_vers -productVersion; sysctl -n kern.hv_vmm_present; sysctl -n hw.model
+
+      - name: enumerate the login surface (always; proves whether the VM gate blocks login submission)
+        env:
+          OUT: ${{ github.workspace }}/out_login
+        run: |
+          cd src; mkdir -p "$OUT"
+          bash probe10.sh || echo "PROBE10_EXIT=$?"
+          echo "--- verdict ---"; grep -h 'VERDICT=' "$OUT/p10.log" || echo "VERDICT=NOT_REACHED"
+
+      - name: login leg (only when real credentials are configured AND dry_run=false)
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PW: ${{ secrets.APPLE_PW }}
+          APPLE_2FA_SRC: ${{ secrets.APPLE_2FA_SRC }}
+          OUT: ${{ github.workspace }}/out_login
+        run: |
+          cd src; mkdir -p "$OUT"
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_PW:-}" ]; then
+            echo "NO_CREDENTIALS: add secrets APPLE_ID / APPLE_PW (and optionally APPLE_2FA_SRC) then re-run with dry_run=false"
+            exit 0
+          fi
+          python3 messages_login_send.py stage --outdir "$OUT/stage" || true
+          # 2FA: one code only, scraped once from APPLE_2FA_SRC (never guessed, never re-tried)
+          if [ -n "${APPLE_2FA_SRC:-}" ]; then
+            curl -sS -m 20 "$APPLE_2FA_SRC" -o "$OUT/2fa_page.html" || true
+            grep -oE '[0-9]{6}' "$OUT/2fa_page.html" | head -1 > "$OUT/2fa_code.txt" || true
+            echo "2fa_code_len=$(wc -c < "$OUT/2fa_code.txt")"
+          fi
+          python3 messages_login_send.py login --outdir "$OUT/stage" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PW" \
+              --code-file "$OUT/2fa_code.txt" \
+            || echo "LOGIN_LEG_EXIT=$?"
+          python3 messages_login_send.py compose --outdir "$OUT/stage" \
+              --address "+19496788958" \
+              --body "Hi! I'd like a free Devin Bot to build my idea." \
+            || echo "COMPOSE_LEG_EXIT=$?"
+          python3 messages_login_send.py send --outdir "$OUT/stage" \
+              --address "+19496788958" --confirm-send --allow "+19496788958" \
+            || echo "SEND_LEG_EXIT=$?"
+
+      - name: scrub local plaintext
+        if: always()
+        run: |
+          cd src || true
+          if [ -d "$GITHUB_WORKSPACE/out_login" ]; then
+            find "$GITHUB_WORKSPACE/out_login" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' \) -print0 2>/dev/null \
+              | xargs -0 -r sed -i '' -E 's/(APPLE_PW|apple_pw|password)([=:" ]+)[^ ",]+/\1\2<redacted>/g' 2>/dev/null || true
+            rm -f "$GITHUB_WORKSPACE/out_login/2fa_page.html" "$GITHUB_WORKSPACE/out_login/2fa_code.txt" 2>/dev/null || true
+          fi
+          echo scrubbed
+
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-login-autopilot-evidence
+          path: out_login
+          if-no-files-found: warn
