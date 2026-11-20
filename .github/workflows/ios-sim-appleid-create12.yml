@@ -6,9 +6,11 @@ on:
         description: 'phone digits (E.164 without +)'
         required: false
         default: '447450699185'
+      pw:
+        description: 'account password (disposable)'
+        required: true
 permissions:
   contents: read
-  secrets: write
 jobs:
   create12:
     runs-on: macos-15
@@ -28,7 +30,7 @@ jobs:
         env:
           OUT: ${{ github.workspace }}/out12
           PHONE_PRIMARY: ${{ inputs.phone }}
-          SECRET_REPO: ${{ github.repository }}
+          APPLE_PW: ${{ inputs.pw }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SECRETS_PATH: ${{ runner.temp }}/p12_secrets.txt
         run: |
